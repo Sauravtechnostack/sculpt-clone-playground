@@ -434,7 +434,7 @@ function performStroke( point, brushObject, brushOnly = false, accumulatedFields
 	indices.forEach( index => {
 
 		tempVec.fromBufferAttribute( normalAttr, index );
-		normal.add( tempVec );
+		normal.add( tempVec );	
 
 		// compute the average point for cases where we need to flatten
 		// to the plane.
