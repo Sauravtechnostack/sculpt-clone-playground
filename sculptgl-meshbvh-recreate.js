@@ -11,6 +11,8 @@ import {
     MeshBVHHelper,
 } from 'three-mesh-bvh';
 import { BufferGeometryUtils } from 'three/examples/jsm/Addons.js';
+import { paintTool } from './sculpting-tools/paintTool';
+import { extractTool } from './sculpting-tools/extractTool';
 
 
 // Set the BVH to global threejs object
@@ -21,17 +23,24 @@ THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 // Declare variables 
 let scene, camera, renderer, controls;
 
-let targetMesh, brush, bvhHelper;
+let geometry, targetMesh, brush, bvhHelper;
 let brushActive = false;
-
+let normalZ = new THREE.Vector3(0, 0, 1);
 let mouse = new THREE.Vector2(), lastMouse = new THREE.Vector2();
 let mouseState = false, lastMouseState = false;
 let lastCastPose = new THREE.Vector3();
-let material = new THREE.MeshStandardMaterial();
+const colorTexture = new THREE.TextureLoader().load('forest-floor-bl/forest_floor_albedo.png')
+colorTexture.colorSpace = THREE.SRGBColorSpace
+let material = new THREE.MeshStandardMaterial({ vertexColors: true, map: colorTexture });
+
+let currentState = 'pain'
+
 
 // Function call to initialize things
 init();
 render();
+
+
 
 
 // Function to initialize everything.
@@ -50,10 +59,13 @@ function init() {
     scene.fog = new THREE.Fog(0x263238 / 2, 20, 60);
 
     // Add light to the scene.
-    const light = new THREE.DirectionalLight(0xffffff, 0.5);
+    const light = new THREE.DirectionalLight(0xffffff, 5);
     light.position.set(1, 1, 1);
-    scene.add(light);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    const light2 = new THREE.DirectionalLight(0xffffff, 5);
+    light2.position.set(-1, 1, 1);
+    // scene.add(light);
+    // scene.add(light2);
+    scene.add(new THREE.AmbientLight(0xffffff, 4));
 
     // Setup Camera.
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 50);
@@ -85,7 +97,6 @@ function init() {
     brush = new THREE.LineSegments();
     brush.geometry.setFromPoints(brushSegments);
     brush.material.color.set(0xfb8c00);
-    // brush.position.set(3,1,0)
     scene.add(brush);
 
 
@@ -95,13 +106,22 @@ function init() {
 
     // Add a basic geometry on the screen to work upon.
     // merge the vertices because they're not already merged
-    // let geometry = new THREE.IcosahedronGeometry(1, 5);
-    let geometry = new THREE.BoxGeometry(undefined, undefined, undefined, 2, 2, 2)
+    // let geometry = new THREE.IcosahedronGeometry(1, 65);
+    // let geometry = new THREE.SphereGeometry(1,40,40)
+    // let geometry = new THREE.TorusKnotGeometry(1)
+    geometry = new THREE.BoxGeometry(undefined, undefined, undefined, 2, 2, 2)
     geometry.deleteAttribute('uv');
     geometry = BufferGeometryUtils.mergeVertices(geometry);
     geometry.attributes.position.setUsage(THREE.DynamicDrawUsage);
     geometry.attributes.normal.setUsage(THREE.DynamicDrawUsage);
     geometry.computeBoundsTree({ setBoundingBox: false });
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(geometry.attributes.position.count * 3).fill(0.1), 3))
+
+    // Ensure the geometry is indexed
+    if (!geometry.getIndex()) {
+        geometry = BufferGeometryUtils.mergeVertices(geometry);
+    }
+
 
     // disable frustum culling because the verts will be updated
     targetMesh = new THREE.Mesh(
@@ -109,7 +129,7 @@ function init() {
         material,
     );
     targetMesh.frustumCulled = false;
-    // material.wireframe = true;
+    material.wireframe = false;
     scene.add(targetMesh);
 
     // Add event listeners.
@@ -157,6 +177,7 @@ function brushStroke(point, brushObject, brushOnly = false, accumulatedFields = 
 
     // Create a sphere where my mouse is and make sure it can use the local space of the target mesh instead of global space as inorder to manipulate the object we need objects local space.
     const sphere = new THREE.Sphere(point);
+    sphere.radius = 0.1
     // sphere.center.copy( point ).applyMatrix4( inverseMatrix );
 
     // Create the bvh
@@ -166,16 +187,12 @@ function brushStroke(point, brushObject, brushOnly = false, accumulatedFields = 
     const normal = new THREE.Vector3(); // Vetor that will have all the vectors that will be used to calculate the normals.
     const indexAttr = targetMesh.geometry.index; // this has all the indexes of the mesh that we need to update.
     const posAttr = targetMesh.geometry.attributes.position;
+    const colorAttr = targetMesh.geometry.attributes.color;
     const normalAttr = targetMesh.geometry.attributes.normal;
     const triangles = new Set();
     bvh.shapecast({
         intersectsBounds(box, isLeaf, score, depth, nodeIndex) {
             const ifIntersect = sphere.intersectsBox(box);
-            if (ifIntersect) {
-                // boxesHit = boxesHit + 1;
-            } else {
-                // boxexNotHit = boxexNotHit + 1
-            }
             return ifIntersect ? INTERSECTED : NOT_INTERSECTED;
         },
         intersectsTriangle(triangle, triangleIndex, contained) {
@@ -209,25 +226,39 @@ function brushStroke(point, brushObject, brushOnly = false, accumulatedFields = 
         }
     });
 
-    // Go through all the indices and find the normal of all the indices that we just retrieved. This will help us placing the brush properly
-    console.log("Indices: ", indices)
-    console.log("Index attribute of the target mesh: ", indexAttr)
+    // Go through all the indices and find the normal of all the indices that we just retrieved. This will help us placing the brush properly.
     indices.forEach((index) => {
         // Get the normals accociated with each index. (Face) This will give us the normal of the "point" that was intersected by Ray Tracer.
-        const indexNormal = "asd"
-        // normal.add()
+        tempVec.fromBufferAttribute(normalAttr, index);
+        normal.add(tempVec)
     })
 
-    // console.log("Accumulated Triangles: ", accumulatedTriangles);
-    // console.log("Accumulated accumulated Vertices: ", accumulatedIndices)
+    // Normalize the accumlated normal.
+    normal.normalize()
+    brushObject.quaternion.setFromUnitVectors(normalZ, normal)
 
+    // Above code just adjusted the brush view
+    // Now lets perform the vertex transformation.
+    if (brushActive && mouseState) {
+        indices.forEach(index => {
+            if (currentState === 'paint') {
+                paintTool(colorAttr, index)
+            } else {
+                extractTool(posAttr, normalAttr, index)
+
+                // Optionally, recompute bounding volumes to ensure proper rendering and raycasting
+                geometry.computeBoundingBox();
+                geometry.computeBoundingSphere();
+            }
+        })
+    }
 
 }
 
 function mainRenderLogic() {
-    // If the controls are being used then don't perform the strokes
+    // If the controls are being used then don't perform the strokes.
     if (controls.active || !brushActive) {
-        // brush.visible = false;
+        brush.visible = false;
         lastCastPose.setScalar(Infinity);
     } else {
         // Cast a ray on each render call.
@@ -250,5 +281,4 @@ function mainRenderLogic() {
             console.log("No hit")
         }
     }
-    // console.log("Target mesh details: ", targetMesh.geometry)
 }
